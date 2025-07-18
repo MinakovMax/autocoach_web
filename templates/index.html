@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Распознавание речи</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            max-width: 700px;
+            margin: 2em auto;
+        }
+
+        #loader {
+            display: none;
+            font-weight: bold;
+            color: #555;
+            margin-top: 1em;
+        }
+
+        .error {
+            color: darkred;
+            font-weight: bold;
+            margin-top: 1em;
+        }
+
+        .result {
+            margin-top: 1em;
+            white-space: pre-wrap;
+            background: #f8f8f8;
+            padding: 1em;
+            border-radius: 6px;
+        }
+
+        #recommendation-buttons {
+            display: none;
+            margin-top: 1.5em;
+        }
+
+        #recommendation-buttons form {
+            margin-bottom: 0.5em;
+        }
+
+        #recommendation-output {
+            margin-top: 1em;
+            background: #e8f9f1;
+            padding: 1em;
+            border-radius: 6px;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Распознавание речи из аудиофайла</h1>
+
+    <form id="upload-form" action="/upload" method="post" enctype="multipart/form-data">
+        <input type="file" name="file" accept=".mp3,.wav" required>
+        <button type="submit">Загрузить и распознать</button>
+    </form>
+
+    <div id="loader">⏳ Распознавание запущено, подождите (1–5 минут)...</div>
+
+    {% if status == "error" %}
+    <div class="error">⚠️ {{ message }}</div>
+
+    {% elif status == "complete" %}
+    <h2>Результат:</h2>
+    <div class="result" id="transcript-text">{{ text }}</div>
+
+    <div id="recommendation-buttons">
+        <form class="recommend-form" method="post" action="/recommend/general">
+            <input type="hidden" name="transcript" value="{{ text }}">
+            <button type="submit">Общая рекомендация 🤖</button>
+        </form>
+        <form class="recommend-form" method="post" action="/recommend/motivation">
+            <input type="hidden" name="transcript" value="{{ text }}">
+            <button type="submit">Мотивация 🚀</button>
+        </form>
+        <form class="recommend-form" method="post" action="/recommend/growth">
+            <input type="hidden" name="transcript" value="{{ text }}">
+            <button type="submit">Точки роста 🔍</button>
+        </form>
+        <form class="recommend-form" method="post" action="/recommend/objection">
+            <input type="hidden" name="transcript" value="{{ text }}">
+            <button type="submit">Работа с возражениями ❓</button>
+        </form>
+    </div>
+
+    <script>
+        document.getElementById("recommendation-buttons").style.display = "block";
+    </script>
+    {% endif %}
+
+    <div id="recommendation-output"></div>
+
+    <script>
+        const form = document.getElementById('upload-form');
+        const loader = document.getElementById('loader');
+
+        form.addEventListener('submit', () => {
+            loader.style.display = 'block';
+        });
+
+        const forms = document.querySelectorAll('.recommend-form');
+        const outputDiv = document.getElementById('recommendation-output');
+
+        forms.forEach(form => {
+            form.addEventListener('submit', async function (e) {
+                e.preventDefault();
+                const formData = new FormData(form);
+                outputDiv.innerHTML = '⏳ Генерация рекомендаций...';
+
+                const response = await fetch(form.action, {
+                    method: "POST",
+                    body: formData
+                });
+
+                const result = await response.text();
+                outputDiv.innerHTML = `<h2>Рекомендация:</h2><div class="result">${result}</div>`;
+            });
+        });
+    </script>
+</body>
+
+</html>
