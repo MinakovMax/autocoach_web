@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Распознавание речи</title>
+    <title>AI-коуч по продажам</title>
     <style>
         body {
             font-family: sans-serif;
@@ -52,19 +52,33 @@
 </head>
 
 <body>
-    <h1>Распознавание речи из аудиофайла</h1>
+    <h1>AI-коуч по продажам</h1>
 
     <form id="upload-form" action="/upload" method="post" enctype="multipart/form-data">
         <input type="file" name="file" accept=".mp3,.wav" required>
         <button type="submit">Загрузить и распознать</button>
     </form>
+    <p>
+        Вы можете загружать только аудиофайлы в формате <strong>.wav</strong> или <strong>.mp3</strong> размером не
+        более
+        <strong>50 МБ</strong>. После загрузки начнётся автоматическое распознавание речи, которое обычно занимает
+        <strong>от 1 до 5 минут</strong>, однако в редких случаях может потребоваться больше времени.
+    </p>
 
+    <p>
+        Для корректной работы системы аудиофайл должен содержать <strong>разговор двух человек</strong>,
+        один из которых — <strong>специалист по работе с клиентами</strong>.
+        По завершении обработки вы получите <strong>текстовую расшифровку разговора</strong>,
+        <strong>рекомендации по улучшению качества общения с клиентами</strong>,
+        а также <strong>анализ сильных сторон и потенциальных точек роста</strong>.
+    </p>
     <div id="loader">⏳ Распознавание запущено, подождите (1–5 минут)...</div>
 
     {% if status == "error" %}
     <div class="error">⚠️ {{ message }}</div>
 
     {% elif status == "complete" %}
+
     <h2>Результат:</h2>
     <div class="result" id="transcript-text">{{ text }}</div>
 
