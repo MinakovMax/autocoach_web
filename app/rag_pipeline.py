@@ -1,65 +1,113 @@
 import os
 import time
 import requests
+import logging
+import traceback
+
+# --- Настройка логгера ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+)
+logger = logging.getLogger("speech2text_app")
 
 API_KEY = os.getenv("API_KEY")
 BASE_URL = "https://speech2text.ru/api/recognitions"
 
-
 def analyze_audio(file_path: str) -> str:
-    """
-    Отправляет аудиофайл в speech2text.ru, возвращает текст с именами спикеров.
-    """
+    logger.info(f"Старт анализа аудиофайла: {file_path}")
+
     if not API_KEY:
+        logger.error("API_KEY не задан. Укажите его в .env")
         raise Exception("API_KEY не задан. Укажите его в .env")
 
-    with open(file_path, 'rb') as f:
-        files = {'file': f}
-        data = {
-            'lang': 'ru',
-            'speakers': '2'
-        }
-        url = f'{BASE_URL}/task/file?api-key={API_KEY}'
-        response = requests.post(url, files=files, data=data)
+    try:
+        with open(file_path, 'rb') as f:
+            files = {'file': f}
+            data = {'lang': 'ru', 'speakers': '2'}
+            url = f'{BASE_URL}/task/file?api-key={API_KEY}'
+            response = requests.post(url, files=files, data=data, timeout=60)
+        logger.info(f"Файл успешно отправлен, статус: {response.status_code}")
+    except FileNotFoundError:
+        logger.error(f"Файл не найден: {file_path}")
+        raise
+    except Exception as ex:
+        logger.error(f"Ошибка при отправке файла: {ex}\n{traceback.format_exc()}")
+        raise
 
     if not response.ok:
+        logger.error(f'Ошибка при отправке файла: {response.text}')
         raise Exception(f'Ошибка при отправке файла: {response.text}')
 
-    task_id = response.json().get('id')
+    try:
+        resp_json = response.json()
+        task_id = resp_json.get('id')
+    except Exception:
+        logger.error(f"Ошибка чтения JSON: {response.text}")
+        raise
+
     if not task_id:
+        logger.error("Не удалось получить task_id из ответа")
         raise Exception('Не удалось получить task_id из ответа')
 
     status_url = f'{BASE_URL}/{task_id}?api-key={API_KEY}'
-    while True:
-        status_response = requests.get(status_url)
-        if not status_response.ok:
-            raise Exception(f'Ошибка статуса: {status_response.text}')
+    logger.info(f"Запрошен статус задачи: {task_id}")
 
-        status_data = status_response.json()
+    for i in range(60):  # 10 минут ожидания
+        try:
+            status_response = requests.get(status_url, timeout=30)
+        except Exception as ex:
+            logger.error(f"Ошибка запроса статуса: {ex}\n{traceback.format_exc()}")
+            raise
+        if not status_response.ok:
+            logger.error(f'Ошибка статуса: {status_response.text}')
+            raise Exception(f'Ошибка статуса: {status_response.text}')
+        try:
+            status_data = status_response.json()
+        except Exception:
+            logger.error(f"Ошибка чтения JSON статуса: {status_response.text}")
+            raise
         code = status_data.get('status', {}).get('code', 0)
         if code == 200:
+            logger.info("Аудиофайл успешно распознан, получаем результат.")
             break
         elif code >= 500:
+            logger.error(f'Ошибка сервера: {status_data.get("status", {}).get("description", "")}')
             raise Exception(f'Ошибка сервера: {status_data.get("status", {}).get("description", "")}')
         else:
+            logger.debug(f"Ожидание завершения задачи, попытка {i+1}/60")
             time.sleep(10)
+    else:
+        logger.error('Истекло время ожидания обработки файла')
+        raise Exception('Истекло время ожидания обработки файла')
 
     result_url = f'{BASE_URL}/{task_id}/result/json?api-key={API_KEY}'
-    result_response = requests.get(result_url)
+    try:
+        result_response = requests.get(result_url, timeout=60)
+    except Exception as ex:
+        logger.error(f"Ошибка получения результата: {ex}\n{traceback.format_exc()}")
+        raise
 
     if not result_response.ok:
+        logger.error(f'Ошибка получения результата: {result_response.text}')
         raise Exception(f'Ошибка получения результата: {result_response.text}')
 
-    result_data = result_response.json()
-    return format_dialogue(result_data)
+    try:
+        result_data = result_response.json()
+    except Exception:
+        logger.error(f"Ошибка чтения JSON результата: {result_response.text}")
+        raise
 
+    try:
+        dialogue = format_dialogue(result_data)
+        logger.info("Диалог успешно сформирован.")
+        return dialogue
+    except Exception as ex:
+        logger.error(f"Ошибка форматирования диалога: {ex}\n{traceback.format_exc()}")
+        raise
 
 def format_dialogue(data: dict) -> str:
-    """
-    Преобразует chunks + speakers в читаемый диалог.
-    """
     speaker_map = {s['id']: s['name'] for s in data.get('speakers', [])}
-    
     lines = []
     for chunk in data.get('chunks', []):
         speaker_id = chunk.get('speaker')
@@ -67,64 +115,83 @@ def format_dialogue(data: dict) -> str:
         text = chunk.get('text', '').strip()
         if text:
             lines.append(f"{speaker_name}: {text}")
-
     return '\n'.join(lines)
 
-import os
-import time
+# --- Дальше логика работы с YandexGPT ---
+
 import jwt
-import requests
 from dotenv import load_dotenv
 from langchain_community.llms import YandexGPT
 
 load_dotenv()
 
-# Получение переменных из .env
 service_account_id = os.getenv('service_account_id')
 key_id = os.getenv('key_id')
-private_key = os.getenv('private_key').replace('\\n', '\n')
+private_key = os.getenv('private_key')
 catalog_id = os.getenv('catalog_id')
 
-# Генерация JWT и получение IAM токена
+if private_key:
+    private_key = private_key.replace('\\n', '\n')
+
 def get_iam_token():
+    if not all([service_account_id, key_id, private_key]):
+        logger.error("service_account_id, key_id или private_key не заданы в .env")
+        raise Exception("service_account_id, key_id или private_key не заданы в .env")
     now = int(time.time())
     payload = {
         'aud': 'https://iam.api.cloud.yandex.net/iam/v1/tokens',
         'iss': service_account_id,
         'iat': now,
-        'exp': now + 360  # токен живёт 6 минут
+        'exp': now + 360
     }
+    try:
+        encoded_token = jwt.encode(
+            payload,
+            private_key,
+            algorithm='PS256',
+            headers={'kid': key_id}
+        )
+        logger.info("JWT успешно сгенерирован")
+    except Exception as ex:
+        logger.error(f"Ошибка генерации JWT: {ex}\n{traceback.format_exc()}")
+        raise
 
-    encoded_token = jwt.encode(
-        payload,
-        private_key,
-        algorithm='PS256',
-        headers={'kid': key_id}
-    )
+    try:
+        response = requests.post(
+            'https://iam.api.cloud.yandex.net/iam/v1/tokens',
+            headers={'Content-Type': 'application/json'},
+            json={'jwt': encoded_token},
+            timeout=30
+        )
+        data = response.json()
+        if "iamToken" not in data:
+            logger.error(f"Ответ не содержит iamToken: {data}")
+            raise Exception(f"Ответ не содержит iamToken: {data}")
+        logger.info("IAM токен успешно получен")
+        return data['iamToken']
+    except Exception as ex:
+        logger.error(f"Ошибка получения IAM токена: {ex}\n{traceback.format_exc()}")
+        raise
 
-    response = requests.post(
-        'https://iam.api.cloud.yandex.net/iam/v1/tokens',
-        headers={'Content-Type': 'application/json'},
-        json={'jwt': encoded_token}
-    )
+def safe_llm_invoke(llm, prompt: str):
+    try:
+        logger.info("Отправляем prompt в YandexGPT")
+        return llm.invoke(prompt)
+    except Exception as ex:
+        logger.error(f"Ошибка генерации текста (invoke): {ex}\n{traceback.format_exc()}")
+        raise
 
-    data = response.json()
-    print("Ответ от Yandex:", data)
-    return data['iamToken']
-
-# Генерация рекомендации
 def generate_general(transcript: str) -> str:
-    token = get_iam_token()
-
-    llm = YandexGPT(
-        model_uri=f"gpt://{catalog_id}/yandexgpt/latest",
-        folder_id=catalog_id,
-        iam_token=token,
-        temperature=0.3,
-        max_tokens=800,
-    )
-
-    prompt = f"""
+    try:
+        token = get_iam_token()
+        llm = YandexGPT(
+            model_uri=f"gpt://{catalog_id}/yandexgpt/latest",
+            folder_id=catalog_id,
+            iam_token=token,
+            temperature=0.3,
+            max_tokens=800,
+        )
+        prompt = f"""
 Ты — эксперт по продажам. На основе следующего разговора с клиентом напиши рекомендации для менеджера по улучшению продаж. Укажи, что было хорошо, что можно улучшить и дай советы.
 
 Разговор:
@@ -135,23 +202,22 @@ def generate_general(transcript: str) -> str:
 2. Что можно улучшить.
 3. Советы по эффективности.
 """
-    return llm.invoke(prompt)
+        return safe_llm_invoke(llm, prompt)
+    except Exception as ex:
+        logger.error(f"Ошибка генерации рекомендации (general): {ex}")
+        return f"[ОШИБКА] {ex}"
 
 def generate_motivation(transcript: str) -> str:
-    """
-    Генерация мотивационной рекомендации на основе текста диалога.
-    """
-    token = get_iam_token()
-
-    llm = YandexGPT(
-        model_uri=f"gpt://{catalog_id}/yandexgpt/latest",
-        folder_id=catalog_id,
-        iam_token=token,
-        temperature=0.4,
-        max_tokens=800,
-    )
-
-    prompt = f"""
+    try:
+        token = get_iam_token()
+        llm = YandexGPT(
+            model_uri=f"gpt://{catalog_id}/yandexgpt/latest",
+            folder_id=catalog_id,
+            iam_token=token,
+            temperature=0.4,
+            max_tokens=800,
+        )
+        prompt = f"""
 Ты — экспертный коуч по продажам с позитивным мышлением. На основе расшифровки диалога между продавцом и клиентом составь мотивационную рекомендацию для продавца.
 
 🔹 Сделай упор на сильные стороны общения.  
@@ -161,29 +227,24 @@ def generate_motivation(transcript: str) -> str:
 Используй дружелюбный, ободряющий тон. Не давай критики — только поддержка, похвала и мотивация.
 
 Текст диалога:
-\"\"\"
-{transcript}
-\"\"\"
+\"\"\"{transcript}\"\"\"
 """
-
-    return llm.invoke(prompt)
-
+        return safe_llm_invoke(llm, prompt)
+    except Exception as ex:
+        logger.error(f"Ошибка генерации мотивации: {ex}")
+        return f"[ОШИБКА] {ex}"
 
 def generate_growth(transcript: str) -> str:
-    """
-    Генерация критической рекомендации и точек роста на основе текста диалога.
-    """
-    token = get_iam_token()
-
-    llm = YandexGPT(
-        model_uri=f"gpt://{catalog_id}/yandexgpt/latest",
-        folder_id=catalog_id,
-        iam_token=token,
-        temperature=0.4,
-        max_tokens=800,
-    )
-
-    prompt = f"""
+    try:
+        token = get_iam_token()
+        llm = YandexGPT(
+            model_uri=f"gpt://{catalog_id}/yandexgpt/latest",
+            folder_id=catalog_id,
+            iam_token=token,
+            temperature=0.4,
+            max_tokens=800,
+        )
+        prompt = f"""
 Ты — эксперт по продажам и обучению сотрудников. Проанализируй диалог между продавцом и клиентом и выдай конструктивную обратную связь.
 
 🔹 Укажи ключевые ошибки или упущенные возможности.  
@@ -193,28 +254,24 @@ def generate_growth(transcript: str) -> str:
 Будь честен, конкретен и профессионален. Тон — уважительный, но ориентирован на рост и развитие.
 
 Текст диалога:
-\"\"\"
-{transcript}
-\"\"\"
+\"\"\"{transcript}\"\"\"
 """
-
-    return llm.invoke(prompt)
+        return safe_llm_invoke(llm, prompt)
+    except Exception as ex:
+        logger.error(f"Ошибка генерации точки роста: {ex}")
+        return f"[ОШИБКА] {ex}"
 
 def generate_objection(transcript: str) -> str:
-    """
-    Генерация рекомендации по обработке возражений на основе текста диалога.
-    """
-    token = get_iam_token()
-
-    llm = YandexGPT(
-        model_uri=f"gpt://{catalog_id}/yandexgpt/latest",
-        folder_id=catalog_id,
-        iam_token=token,
-        temperature=0.4,
-        max_tokens=800,
-    )
-
-    prompt = f"""
+    try:
+        token = get_iam_token()
+        llm = YandexGPT(
+            model_uri=f"gpt://{catalog_id}/yandexgpt/latest",
+            folder_id=catalog_id,
+            iam_token=token,
+            temperature=0.4,
+            max_tokens=800,
+        )
+        prompt = f"""
 Ты — эксперт по продажам с опытом в преодолении возражений. Проанализируй расшифровку диалога между продавцом и клиентом.
 
 🔸 Выяви ключевые возражения, которые озвучил клиент или которые были явно не проработаны.  
@@ -228,9 +285,10 @@ def generate_objection(transcript: str) -> str:
 3. Альтернативные варианты более качественной обработки.
 
 Текст диалога:
-\"\"\"
-{transcript}
-\"\"\"
+\"\"\"{transcript}\"\"\"
 """
-    return llm.invoke(prompt)
+        return safe_llm_invoke(llm, prompt)
+    except Exception as ex:
+        logger.error(f"Ошибка генерации по возражениям: {ex}")
+        return f"[ОШИБКА] {ex}"
 
